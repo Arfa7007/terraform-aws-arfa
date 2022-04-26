@@ -4,6 +4,8 @@ client = boto3.client('dynamodb')
 def lambda_handler(event, context):
     data = client.get_item(
         TableName = 'kinetic_block_installation_info',
+        TableName = 'kinetic_block_installation_info',
+        TableName = 'kinetic_block_installation_info',
         Key = {
             'reference_id' :
             {
