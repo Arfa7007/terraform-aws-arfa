@@ -1,0 +1,260 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+  apiGatewayName:
+    Type: String
+    Default: my-api
+  apiGatewayStageName:
+    Type: String
+    AllowedPattern: '[a-z0-9]+'
+    Default: call
+  apiGatewayHTTPMethod:
+    Type: String
+    Default: POST
+  lambdaFunctionName:
+    Type: String
+    AllowedPattern: '[a-zA-Z0-9]+[a-zA-Z0-9-]+[a-zA-Z0-9]+'
+    Default: my-function
+
+  AdminEmail:
+    Type: String
+  CognitoDomain:
+    Type: String
+    MinLength: 3
+    MaxLength: 63
+    AllowedPattern: ^[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?$
+    Description: Enter a string. Must be alpha numeric 3-63 in length.
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UsernameConfiguration: 
+        CaseSensitive: false
+      #UsernameAttributes: [email]
+        #- email
+      AutoVerifiedAttributes:
+        - email
+      UserPoolName: !Sub ${CognitoDomain}-user-pool
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: false
+          Required: true
+        - Name: name
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+  CognitoUserPoolAdmin:        
+    Type: AWS::Cognito::UserPoolUser
+    Properties: 
+      Username: vidyaadmin
+      DesiredDeliveryMediums:
+        - EMAIL
+      UserPoolId: !Ref UserPool
+      UserAttributes: 
+        - Name: email
+          Value: !Ref AdminEmail
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      AllowedOAuthFlowsUserPoolClient: true
+      CallbackURLs:
+        - https://kineticfabric.app-coe.com/login
+      LogoutURLs: 
+        - https://kineticfabric.app-coe.com/login
+      AllowedOAuthFlows:
+        - code
+        - implicit
+      AllowedOAuthScopes:
+        - phone
+        - email
+        - openid
+        - aws.cognito.signin.user.admin
+        - profile
+      SupportedIdentityProviders:
+        - COGNITO
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref CognitoDomain
+      UserPoolId: !Ref UserPool
+  apiGateway:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      ApiKeySourceType: HEADER       
+      Description: Example API Gateway
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Name: testapi
+  
+  apiGatewayResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      ParentId: !GetAtt ['apiGateway','RootResourceId']
+      PathPart: 'lambda'
+      RestApiId: !Ref apiGateway
+
+  apiGatewayMethodPOST:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: !Ref apiGatewayHTTPMethod
+      Integration:
+        ConnectionType: INTERNET
+        IntegrationHttpMethod: POST
+        Type: AWS
+        Uri: !Sub 
+          - >-
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt lambdaFunction.Arn
+        IntegrationResponses:
+          - ResponseTemplates:
+              application/json: "{\"message\": \"OK\"}"
+            SelectionPattern: '2\d{2}'
+            StatusCode: 200
+          - ResponseTemplates:
+              application/json: "{\"message\": \"Internal Server Error\"}"
+            SelectionPattern: '5\d{2}'
+            StatusCode: 500
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        RequestTemplates:
+          application/json: "{\"statusCode\": $input.json('$.statusCode'), \"message\": $input.json('$.message')}"
+        Type: AWS
+        TimeoutInMillis: 29000
+      MethodResponses:
+        - ResponseModels:
+            application/json: !Ref apiGatewayModel
+          StatusCode: 200
+        - ResponseModels:
+            application/json: !Ref apiGatewayModel
+          StatusCode: 500
+      OperationName: 'Complete'
+      ResourceId: !GetAtt apiGateway.RootResourceId
+      RestApiId: !Ref apiGateway
+  
+  TestAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      IdentitySource: method.request.header.authorization
+      Name: CognitoAuthorizer
+      ProviderARNs:
+        - Fn::GetAtt:
+            - CognitoUsers
+            - Arn
+      RestApiId: !Ref TestApi
+      Type: COGNITO_USER_POOLS
+
+  
+  
+  apiGatewayModel:
+    Type: 'AWS::ApiGateway::Model'
+    Properties:
+      ContentType: 'application/json'
+      RestApiId: !Ref apiGateway
+      Schema: {}
+
+  apiGatewayStage:
+    Type: 'AWS::ApiGateway::Stage'
+    Properties:
+      DeploymentId: !Ref apiGatewayDeployment
+      Description: Mock API Stage v0
+      RestApiId: !Ref apiGateway
+      StageName: 'v0'
+
+  
+  apiGatewayDeployment :
+    Type: 'AWS::ApiGateway::Deployment'
+    DependsOn:
+       - apiGatewayMethodPOST
+    
+       
+    Properties:
+      RestApiId: !Ref apiGateway
+      StageName: !Ref apiGatewayStageName
+ 
+    
+    
+    
+    
+  lambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          def handler(event, context):
+            response = {
+              'isBase64Encoded': False,
+              'statusCode': 200,
+              'headers': {},
+              'multiValueHeaders': {},
+              'body': 'Hello, World!'
+            }
+            return response          
+      Description: AWS Lambda function
+      FunctionName: 'lambda-function'
+      Handler: index.handler
+      MemorySize: 256
+      Role: !GetAtt lambdaIAMRole.Arn
+      Runtime: python3.7
+      Timeout: 60
+  lambdaApiGatewayInvoke:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !GetAtt lambdaFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub >-
+        arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${apiGateway}/${apiGatewayStageName}/${apiGatewayHTTPMethod}/
+  lambdaIAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+      Policies:
+        - PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Effect: Allow
+                Resource:
+                  - !Sub >-
+                    arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${lambdaFunctionName}:*
+          PolicyName: lambda
+  lambdaLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${lambdaFunctionName}'
+      RetentionInDays: 90
+
+      
+
+Outputs:
+  CognitoUserPoolID:
+    Value: !Ref UserPool
+    Description: The UserPool ID
+  CognitoAppClientID:
+    Value: !Ref UserPoolClient
+    Description: The app client
+  HostedUIURL:
+    Value: !Sub https://${CognitoDomain}.auth.us-west-2.amazoncognito.com/login?client_id=${UserPoolClient}&response_type=code&scope=email+openid+phone+profile&redirect_uri=http://localhost:3000
+    Description: The hosted UI URL
+  apiGatewayInvokeURL:
+    Value: !Sub >-
+      https://${apiGateway}.execute-api.${AWS::Region}.amazonaws.com/${apiGatewayStageName}
+  lambdaArn:
+    Value: !GetAtt lambdaFunction.Arn
